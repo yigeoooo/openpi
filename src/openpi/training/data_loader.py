@@ -190,6 +190,51 @@ def _patch_datasets_legacy_list_feature() -> None:
     datasets_features._FEATURE_TYPES.setdefault("List", datasets.Sequence)
 
 
+class _LeRobotV3MetadataPathAdapter:
+    def __init__(self, metadata):
+        self._metadata = metadata
+
+    def __getattr__(self, name):
+        return getattr(self._metadata, name)
+
+    def get_data_file_path(self, ep_index: int) -> pathlib.Path:
+        episode = self._metadata.episodes.get(ep_index, {})
+        data_path = self._metadata.data_path
+        if isinstance(data_path, str) and "{chunk_index" in data_path and "{file_index" in data_path:
+            return pathlib.Path(
+                data_path.format(
+                    chunk_index=int(episode.get("data/chunk_index", episode.get("chunk_index", 0))),
+                    file_index=int(episode.get("data/file_index", episode.get("file_index", ep_index))),
+                )
+            )
+        return self._metadata.get_data_file_path(ep_index)
+
+    def get_video_file_path(self, ep_index: int, vid_key: str) -> pathlib.Path:
+        episode = self._metadata.episodes.get(ep_index, {})
+        video_path = self._metadata.video_path
+        chunk_key = f"videos/{vid_key}/chunk_index"
+        file_key = f"videos/{vid_key}/file_index"
+        if isinstance(video_path, str) and "{chunk_index" in video_path and "{file_index" in video_path:
+            return pathlib.Path(
+                video_path.format(
+                    video_key=vid_key,
+                    chunk_index=int(episode.get(chunk_key, episode.get("chunk_index", 0))),
+                    file_index=int(episode.get(file_key, episode.get("file_index", ep_index))),
+                )
+            )
+        return self._metadata.get_video_file_path(ep_index, vid_key)
+
+
+def _wrap_lerobot_v3_metadata_paths(dataset) -> None:
+    data_path = getattr(dataset.meta, "data_path", None)
+    video_path = getattr(dataset.meta, "video_path", None)
+    if (
+        (isinstance(data_path, str) and "{chunk_index" in data_path and "{file_index" in data_path)
+        or (isinstance(video_path, str) and "{chunk_index" in video_path and "{file_index" in video_path)
+    ):
+        dataset.meta = _LeRobotV3MetadataPathAdapter(dataset.meta)
+
+
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
 
@@ -321,6 +366,7 @@ def create_torch_dataset(
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
     )
+    _wrap_lerobot_v3_metadata_paths(dataset)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
