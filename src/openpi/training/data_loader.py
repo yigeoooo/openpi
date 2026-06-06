@@ -178,6 +178,18 @@ def _patch_lerobot_v3_path_templates() -> None:
     lerobot_dataset.LeRobotDatasetMetadata._openpi_v3_path_patch = True
 
 
+def _patch_datasets_legacy_list_feature() -> None:
+    """Allow HF datasets 3.x to read older parquet metadata that uses feature type 'List'."""
+
+    try:
+        import datasets
+        from datasets.features import features as datasets_features
+    except ImportError:
+        return
+
+    datasets_features._FEATURE_TYPES.setdefault("List", datasets.Sequence)
+
+
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
 
@@ -298,6 +310,7 @@ def create_torch_dataset(
 
     _maybe_prepare_lerobot_v3_parquet_metadata(repo_id)
     _patch_lerobot_v3_path_templates()
+    _patch_datasets_legacy_list_feature()
     local_root = pathlib.Path(repo_id).expanduser() if pathlib.Path(repo_id).expanduser().exists() else None
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=local_root)
