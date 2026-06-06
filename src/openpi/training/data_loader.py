@@ -1,7 +1,9 @@
 from collections.abc import Iterator, Sequence
+import json
 import logging
 import multiprocessing
 import os
+import pathlib
 import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
@@ -17,6 +19,110 @@ from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
+
+
+def _to_jsonable(value):
+    if isinstance(value, np.ndarray):
+        return [_to_jsonable(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    return value
+
+
+def _write_jsonl(path: pathlib.Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(_to_jsonable(row), ensure_ascii=False) + "\n")
+    tmp_path.replace(path)
+
+
+def _maybe_prepare_lerobot_v3_parquet_metadata(repo_id: str) -> None:
+    """Generate jsonl metadata expected by older LeRobot readers from local v3 parquet metadata."""
+
+    root = pathlib.Path(repo_id).expanduser()
+    if not root.exists():
+        return
+
+    meta_dir = root / "meta"
+    tasks_parquet = meta_dir / "tasks.parquet"
+    episodes_dir = meta_dir / "episodes"
+    if not tasks_parquet.exists() or not episodes_dir.exists():
+        return
+
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise ImportError("Reading local LeRobot v3 parquet metadata requires pandas.") from exc
+
+    tasks_jsonl = meta_dir / "tasks.jsonl"
+    if not tasks_jsonl.exists():
+        tasks_df = pd.read_parquet(tasks_parquet)
+        if "task" not in tasks_df.columns:
+            tasks_df = tasks_df.reset_index()
+        if not {"task_index", "task"} <= set(tasks_df.columns):
+            raise ValueError(f"Cannot convert {tasks_parquet}: expected task_index and task columns.")
+        tasks_rows = [
+            {"task_index": int(row["task_index"]), "task": str(row["task"])}
+            for _, row in tasks_df.sort_values("task_index").iterrows()
+        ]
+        _write_jsonl(tasks_jsonl, tasks_rows)
+        logging.info("Generated LeRobot compatibility metadata: %s", tasks_jsonl)
+
+    episode_paths = sorted(episodes_dir.glob("chunk-*/file-*.parquet"))
+    if not episode_paths:
+        return
+
+    episodes_jsonl = meta_dir / "episodes.jsonl"
+    episodes_stats_jsonl = meta_dir / "episodes_stats.jsonl"
+    if episodes_jsonl.exists() and episodes_stats_jsonl.exists():
+        return
+
+    episodes_rows = []
+    episodes_stats_rows = []
+    for path in episode_paths:
+        df = pd.read_parquet(path)
+        for _, row in df.iterrows():
+            item = row.to_dict()
+            episode_index = int(item["episode_index"])
+            data_chunk_index = int(item.get("data/chunk_index", item.get("chunk_index", 0)))
+            data_file_index = int(item.get("data/file_index", item.get("file_index", episode_index)))
+
+            episode = {}
+            for key, value in item.items():
+                if str(key).startswith("stats/"):
+                    continue
+                episode[str(key)] = _to_jsonable(value)
+            episode["episode_index"] = episode_index
+            episode["length"] = int(item["length"])
+            episode["tasks"] = _to_jsonable(item.get("tasks", []))
+            episode["chunk_index"] = data_chunk_index
+            episode["file_index"] = data_file_index
+            episodes_rows.append(episode)
+
+            stats = {}
+            for key, value in item.items():
+                key = str(key)
+                if not key.startswith("stats/"):
+                    continue
+                feature_name, stat_name = key.removeprefix("stats/").rsplit("/", 1)
+                stats.setdefault(feature_name, {})[stat_name] = _to_jsonable(value)
+            if stats:
+                episodes_stats_rows.append({"episode_index": episode_index, "stats": stats})
+
+    episodes_rows.sort(key=lambda x: x["episode_index"])
+    episodes_stats_rows.sort(key=lambda x: x["episode_index"])
+    if not episodes_jsonl.exists():
+        _write_jsonl(episodes_jsonl, episodes_rows)
+        logging.info("Generated LeRobot compatibility metadata: %s", episodes_jsonl)
+    if episodes_stats_rows and not episodes_stats_jsonl.exists():
+        _write_jsonl(episodes_stats_jsonl, episodes_stats_rows)
+        logging.info("Generated LeRobot compatibility metadata: %s", episodes_stats_jsonl)
 
 
 class Dataset(Protocol[T_co]):
@@ -137,9 +243,13 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    _maybe_prepare_lerobot_v3_parquet_metadata(repo_id)
+    local_root = pathlib.Path(repo_id).expanduser() if pathlib.Path(repo_id).expanduser().exists() else None
+
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=local_root)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        root=local_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
