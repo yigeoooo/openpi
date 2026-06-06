@@ -18,6 +18,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.alohamini_policy as alohamini_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -556,6 +557,87 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
+@dataclasses.dataclass(frozen=True)
+class LeRobotAlohaMiniDataConfig(DataConfigFactory):
+    default_prompt: str | None = None
+    bgr_to_rgb: bool = False
+    flip_images_hw: bool = False
+    robot_dof: int = 16  # 16 or 18
+    dataset_action_dim: int = 16
+    use_delta_actions: bool = True
+
+    delta_action_mask: tyro.conf.Suppress[Sequence[bool]] = dataclasses.field(
+        default_factory=lambda: [True] * 18
+    )
+
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "cam_high": "observation.images.head_top",
+                            "cam_left_wrist": "observation.images.wrist_left",
+                            "cam_right_wrist": "observation.images.wrist_right",
+                        },
+                        "state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+    )
+
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        if self.robot_dof not in (16, 18):
+            raise ValueError(f"robot_dof must be 16 or 18, got {self.robot_dof}")
+
+        expanded_dim = 18  # Pi0.5 internal action space
+        data_transforms = _transforms.Group(
+            inputs=[
+                alohamini_policy.AlohaMiniInputs(bgr_to_rgb=self.bgr_to_rgb),
+                alohamini_policy.AlignToPi05ActionSpace(robot_dof=self.robot_dof),
+            ],
+            outputs=[
+                alohamini_policy.AlohaMiniOutputs(internal_dim=18, robot_dof=self.robot_dof)
+            ],
+        )
+        if self.flip_images_hw:
+            data_transforms = _transforms.Group(
+                inputs=[
+                    alohamini_policy.AlohaMiniInputs(bgr_to_rgb=self.bgr_to_rgb),
+                    _transforms.FlipImages(flip_h=True, flip_w=True),
+                    alohamini_policy.AlignToPi05ActionSpace(robot_dof=self.robot_dof),
+                ],
+                outputs=data_transforms.outputs,
+            )
+
+        if self.use_delta_actions:
+            mask = list(self.delta_action_mask)
+            if len(mask) != 18:
+                raise ValueError(
+                    f"delta_action_mask length must be 18, got {len(mask)}")
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(mask)],
+                outputs=[_transforms.AbsoluteActions(mask)],
+            )
+
+        model_transforms = ModelTransformFactory(
+            default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     #
@@ -963,6 +1045,79 @@ _CONFIGS = [
         num_train_steps=10,
         overwrite=True,
         exp_name="debug_pi05",
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="pick_up_merged",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10),
+        data=LeRobotAlohaMiniDataConfig(
+            repo_id="/home/cenzl/VLA/lerobot_dataset_precessing/pick_up_merged",
+            default_prompt="pickup the rubbish",
+            robot_dof=16,  # set 18 for native 18-DoF robots
+            dataset_action_dim=16,
+            use_delta_actions=True,
+            # Pi0.5 internal action space is always 18D.
+            delta_action_mask=[
+                True, True, True, True, True, True, False,
+                True, True, True, True, True, True, False,
+                False, False, False, False,
+            ],
+            assets=AssetsConfig(
+                assets_dir="/home/cenzl/VLA/lerobot_dataset_precessing/assets",
+                asset_id="pick_up_merged",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/cenzl/VLA/openpi/checkpoints/pi05_base/params",
+        ),
+        pytorch_weight_path="/home/cenzl/VLA/openpi/checkpoints/pi05_base_pytorch",
+        num_train_steps=20000,
+        batch_size=8,
+        num_workers=2,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
+        name="alohamini2pro_0604",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10),
+        data=LeRobotAlohaMiniDataConfig(
+            repo_id="/home/jingyi.wang/datasets/dataset2026.06.04",
+            default_prompt="pickup the rubbish",
+            robot_dof=18,
+            dataset_action_dim=18,
+            use_delta_actions=True,
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.chest",
+                                "cam_left_wrist": "observation.images.wrist_left",
+                                "cam_right_wrist": "observation.images.wrist_right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            # AlohaMini2Pro is native 18D: arm joints are trained as deltas,
+            # grippers/base/lift stay absolute.
+            delta_action_mask=[
+                True, True, True, True, True, True, False,
+                True, True, True, True, True, True, False,
+                False, False, False, False,
+            ],
+            assets=AssetsConfig(
+                assets_dir="/home/jingyi.wang/datasets",
+                asset_id="dataset2026.06.04",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+        ),
+        num_train_steps=20000,
+        batch_size=8,
+        num_workers=2,
         wandb_enabled=False,
     ),
     # RoboArena & PolaRiS configs.
