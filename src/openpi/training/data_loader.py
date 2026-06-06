@@ -125,6 +125,59 @@ def _maybe_prepare_lerobot_v3_parquet_metadata(repo_id: str) -> None:
         logging.info("Generated LeRobot compatibility metadata: %s", episodes_stats_jsonl)
 
 
+def _patch_lerobot_v3_path_templates() -> None:
+    """Support LeRobot v3 path templates with older LeRobot metadata classes."""
+
+    if getattr(lerobot_dataset.LeRobotDatasetMetadata, "_openpi_v3_path_patch", False):
+        return
+
+    original_get_data_file_path = lerobot_dataset.LeRobotDatasetMetadata.get_data_file_path
+    original_get_video_file_path = lerobot_dataset.LeRobotDatasetMetadata.get_video_file_path
+
+    def get_data_file_path(self, ep_index: int) -> pathlib.Path:
+        episode = getattr(self, "episodes", {}).get(ep_index, {})
+        data_path = getattr(self, "data_path", None)
+        if (
+            isinstance(data_path, str)
+            and "{chunk_index" in data_path
+            and "{file_index" in data_path
+            and ("data/chunk_index" in episode or "chunk_index" in episode)
+            and ("data/file_index" in episode or "file_index" in episode)
+        ):
+            return pathlib.Path(
+                data_path.format(
+                    chunk_index=int(episode.get("data/chunk_index", episode.get("chunk_index", 0))),
+                    file_index=int(episode.get("data/file_index", episode.get("file_index", ep_index))),
+                )
+            )
+        return original_get_data_file_path(self, ep_index)
+
+    def get_video_file_path(self, ep_index: int, vid_key: str) -> pathlib.Path:
+        episode = getattr(self, "episodes", {}).get(ep_index, {})
+        video_path = getattr(self, "video_path", None)
+        chunk_key = f"videos/{vid_key}/chunk_index"
+        file_key = f"videos/{vid_key}/file_index"
+        if (
+            isinstance(video_path, str)
+            and "{chunk_index" in video_path
+            and "{file_index" in video_path
+            and (chunk_key in episode or "chunk_index" in episode)
+            and (file_key in episode or "file_index" in episode)
+        ):
+            return pathlib.Path(
+                video_path.format(
+                    video_key=vid_key,
+                    chunk_index=int(episode.get(chunk_key, episode.get("chunk_index", 0))),
+                    file_index=int(episode.get(file_key, episode.get("file_index", ep_index))),
+                )
+            )
+        return original_get_video_file_path(self, ep_index, vid_key)
+
+    lerobot_dataset.LeRobotDatasetMetadata.get_data_file_path = get_data_file_path
+    lerobot_dataset.LeRobotDatasetMetadata.get_video_file_path = get_video_file_path
+    lerobot_dataset.LeRobotDatasetMetadata._openpi_v3_path_patch = True
+
+
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
 
@@ -244,6 +297,7 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     _maybe_prepare_lerobot_v3_parquet_metadata(repo_id)
+    _patch_lerobot_v3_path_templates()
     local_root = pathlib.Path(repo_id).expanduser() if pathlib.Path(repo_id).expanduser().exists() else None
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=local_root)
