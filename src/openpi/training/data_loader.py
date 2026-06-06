@@ -194,8 +194,17 @@ class _LeRobotV3MetadataPathAdapter:
     def __init__(self, metadata):
         self._metadata = metadata
 
+    def __getstate__(self):
+        return {"metadata": self._metadata}
+
+    def __setstate__(self, state):
+        self._metadata = state["metadata"]
+
     def __getattr__(self, name):
-        return getattr(self._metadata, name)
+        metadata = self.__dict__.get("_metadata")
+        if metadata is None:
+            raise AttributeError(name)
+        return getattr(metadata, name)
 
     def get_data_file_path(self, ep_index: int) -> pathlib.Path:
         episode = self._metadata.episodes.get(ep_index, {})
