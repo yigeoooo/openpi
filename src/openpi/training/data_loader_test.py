@@ -1,6 +1,7 @@
 import dataclasses
 
 import jax
+import torch
 
 from openpi.models import pi0_config
 from openpi.training import config as _config
@@ -45,6 +46,22 @@ def test_torch_data_loader_parallel():
 
     for batch in batches:
         assert all(x.shape[0] == 4 for x in jax.tree.leaves(batch))
+
+
+def test_torch_data_loader_pytorch_framework_uses_cpu_tensors():
+    config = pi0_config.Pi0Config(action_dim=24, action_horizon=50, max_token_len=48)
+    dataset = _data_loader.FakeDataset(config, 16)
+
+    loader = _data_loader.TorchDataLoader(
+        dataset,
+        local_batch_size=4,
+        num_batches=1,
+        framework="pytorch",
+    )
+    batch = next(iter(loader))
+
+    assert all(x.shape[0] == 4 for x in jax.tree.leaves(batch))
+    assert all(isinstance(x, torch.Tensor) for x in jax.tree.leaves(batch))
 
 
 def test_with_fake_dataset():
