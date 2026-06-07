@@ -127,11 +127,17 @@ uv run scripts/compute_norm_stats.py --config-name alohamini2pro_0604
 
 ```bash
 cd ~/project/openpi
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
 uv run scripts/train.py alohamini2pro_0604 \
-  --exp-name=alohamini2pro_pi05_0604 \
-  --overwrite
+    --exp-name=alohamini2pro_pi05_0604 \
+    --overwrite \
+    --fsdp-devices=4 \
+    --save_interval=10000 \
+    --ema-decay=None
 ```
+
+可选参数：--ema-decay=None，训练时会优化显存空间，跑不起来可以尝试加上，对应可能导致模型推理没有那么稳定
 
 当前配置使用的 Pi-0.5 base 权重是：
 
@@ -187,6 +193,77 @@ uv run scripts/serve_policy_http.py \
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8000/metadata
 ```
+
+### 6.1 机器人侧连接 HTTP 推理服务
+
+机器人侧运行 LeRobot/AlohaMini2Pro 推理脚本时，`--server_url` 必须填写机器人侧机器能够访问到的 HTTP 地址。服务端启动成功后，如果机器人侧请求真的到达 OpenPI 服务端，服务端终端会看到 `GET /metadata` 和 `POST /infer` 访问日志。
+
+#### 方式 A：服务器 8000 端口已开放，直接访问
+
+如果云服务器或内网服务器已经把 `8000` 端口开放给机器人侧机器，并且防火墙、安全组、NAT 都允许访问，可以直接使用服务器 IP：
+
+```bash
+curl http://<server-ip>:8000/healthz
+curl http://<server-ip>:8000/metadata
+```
+
+确认能返回后，在机器人侧运行：
+
+```bash
+cd ~/project/lerobot_alohamini
+python3 examples/alohamini/evaluate_bi_http.py \
+  --server_url http://<server-ip>:8000 \
+  --remote_ip <robot-host-ip> \
+  --robot_model alohamini2pro \
+  --robot_dof 18 \
+  --task_description "pickup the rubbish" \
+  --no_save
+```
+
+如果 `curl http://<server-ip>:8000/healthz` 失败，或者返回 `Empty reply from server`，说明公网/内网端口没有正常打到 Uvicorn 进程，不要继续用这个地址跑推理，先改用下面的 SSH 转发方式。
+
+#### 方式 B：服务器 8000 端口未开放，使用 SSH 本地转发
+
+如果服务器只开放 SSH 端口，例如：
+
+```text
+ssh jingyi.wang@183.230.224.121 -p 50210
+```
+
+但没有开放 HTTP `8000` 端口，可以在机器人侧机器新开一个终端，建立本地端口转发：
+
+```bash
+ssh -p 50210 -L 18000:127.0.0.1:8000 jingyi.wang@183.230.224.121 -N
+```
+
+保持这个终端不要关闭。它会把机器人侧机器的 `127.0.0.1:18000` 转发到服务器本机的 `127.0.0.1:8000`。
+
+然后在机器人侧另一个终端检查：
+
+```bash
+curl http://127.0.0.1:18000/healthz
+curl http://127.0.0.1:18000/metadata
+```
+
+确认正常后，机器人侧推理脚本使用本地转发地址：
+
+```bash
+cd ~/project/lerobot_alohamini
+python3 examples/alohamini/evaluate_bi_http.py \
+  --server_url http://127.0.0.1:18000 \
+  --remote_ip <robot-host-ip> \
+  --robot_model alohamini2pro \
+  --robot_dof 18 \
+  --task_description "pickup the rubbish" \
+  --no_save
+```
+
+注意：
+
+- SSH 转发命令必须在运行机器人侧推理脚本的同一台机器上执行。
+- 如果本地 `18000` 端口被占用，可以换成其他端口，例如 `19000`，并同步修改 `--server_url http://127.0.0.1:19000`。
+- 使用 SSH 转发时，OpenPI 服务端仍然只需要监听服务器本机的 `0.0.0.0:8000` 或 `127.0.0.1:8000`，机器人侧不需要直接访问服务器公网 `8000` 端口。
+- 如果服务端终端始终没有出现 `GET /metadata` 或 `POST /infer`，说明机器人侧请求还没有到达 OpenPI HTTP 服务。
 
 ## 7. 推理请求格式
 
