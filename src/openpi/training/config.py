@@ -1081,6 +1081,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10),
         data=LeRobotAlohaMiniDataConfig(
             repo_id="/home/jingyi.wang/datasets/dataset2026.06.04",
+            base_config=DataConfig(prompt_from_task=True),
             default_prompt="pickup the rubbish",
             robot_dof=18,
             dataset_action_dim=18,
@@ -1096,6 +1097,7 @@ _CONFIGS = [
                             },
                             "state": "observation.state",
                             "actions": "action",
+                            "prompt": "prompt",
                         }
                     )
                 ]
