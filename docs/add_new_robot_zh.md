@@ -323,15 +323,3 @@ lift 回到底部         → 结束
 | 长任务阶段边界混乱 | 用了单条长 prompt;改为子任务 prompt + 状态机 |
 | `task_index not found` | 数据集某些帧的 task_index 不在 `meta/tasks` 映射里 |
 | 相机数量/命名不符 | Inputs 里把缺失相机补零 + `image_mask=False`;多余相机自行取舍映射到 3 个槽位 |
-
----
-
-## 11. 最小改动清单(打勾用)
-
-- [ ] 数据集就绪,维度/单位/task 映射核对无误
-- [ ] `src/openpi/policies/foo_policy.py`:`FooInputs` + `FooOutputs`(+ 可选对齐/example)
-- [ ] `config.py`:`LeRobotFooDataConfig`(repack + data_transforms + prompt 开关)
-- [ ] `config.py` `_CONFIGS`:`TrainConfig(name="foo_v1", ...)`
-- [ ] `compute_norm_stats.py --config-name=foo_v1` → 生成 `norm_stats.json`
-- [ ] `train.py foo_v1` → 出 checkpoint
-- [ ] `serve_policy.py` → 起服务,真机联调
