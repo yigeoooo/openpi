@@ -35,6 +35,15 @@ ModelType: TypeAlias = _model.ModelType
 Filter: TypeAlias = nnx.filterlib.Filter
 
 
+def _freeze_vlm_keep_action_expert(path: nnx.filterlib.PathParts, _: Any) -> bool:
+    joined_path = "/".join(str(part) for part in path)
+    if joined_path.startswith("PaliGemma/img/"):
+        return True
+    if joined_path.startswith("PaliGemma/llm/") and "_1" not in joined_path and "lora" not in joined_path:
+        return True
+    return False
+
+
 @dataclasses.dataclass(frozen=True)
 class AssetsConfig:
     """Determines the location of assets (e.g., norm stats) that will be used to set up the data pipeline.
@@ -1077,7 +1086,7 @@ _CONFIGS = [
         wandb_enabled=False,
     ),
     TrainConfig(
-        name="alohamini2pro_0604",
+        name="alohamini2pro",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10),
         data=LeRobotAlohaMiniDataConfig(
             repo_id="/home/jingyi.wang/datasets/dataset2026.06.04",
@@ -1121,6 +1130,7 @@ _CONFIGS = [
         batch_size=4,
         num_workers=2,
         wandb_enabled=False,
+        freeze_filter=_freeze_vlm_keep_action_expert,
     ),
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),

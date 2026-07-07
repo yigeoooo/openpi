@@ -5,7 +5,7 @@
 当前 OpenPI 配置名：
 
 ```bash
-alohamini2pro_0604
+alohamini2pro
 ```
 
 当前训练数据集路径：
@@ -38,7 +38,7 @@ robot_dof=18
 dataset_action_dim=18
 ```
 
-不会走 AlohaMini1 的 16 维转 18 维虚拟关节路径。
+当前 `alohamini2pro` 训练配置默认冻结 VLM 基座：冻结 PaliGemma 视觉塔和语言/Gemma 主干，只训练 action expert、动作投影层和时间 MLP 等动作相关参数。
 
 ## 1. 18 维状态和动作顺序
 
@@ -114,7 +114,7 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 
 ```bash
 cd ~/project/openpi
-uv run scripts/compute_norm_stats.py --config-name alohamini2pro_0604
+uv run scripts/compute_norm_stats.py --config-name alohamini2pro
 ```
 
 执行完成后应能看到：
@@ -129,7 +129,7 @@ uv run scripts/compute_norm_stats.py --config-name alohamini2pro_0604
 cd ~/project/openpi
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
-uv run scripts/train.py alohamini2pro_0604 \
+uv run scripts/train.py alohamini2pro \
     --exp-name=alohamini2pro_pi05_0604 \
     --overwrite \
     --fsdp-devices=4 \
@@ -150,7 +150,7 @@ OpenPI 会按自身逻辑下载或缓存该权重。
 训练输出目录：
 
 ```text
-~/project/openpi/checkpoints/alohamini2pro_0604/alohamini2pro_pi05_0604/<step>
+~/project/openpi/checkpoints/alohamini2pro/alohamini2pro_pi05_0604/<step>
 ```
 
 其中 `<step>` 是具体保存步数，例如 `19999` 或其他 checkpoint step。
@@ -177,8 +177,8 @@ uv run scripts/serve_policy_http.py \
   --port 8000 \
   --default-prompt "pickup the rubbish" \
   policy:checkpoint \
-  --policy.config=alohamini2pro_0604 \
-  --policy.dir=checkpoints/alohamini2pro_0604/alohamini2pro_pi05_0604/<step>
+  --policy.config=alohamini2pro \
+  --policy.dir=checkpoints/alohamini2pro/alohamini2pro_pi05_0604/<step>
 ```
 
 服务接口：
@@ -292,12 +292,3 @@ observation = {
 - `action`：预测 action chunk 的第一步，18 维
 - `actions`：完整 action chunk，形状约为 `[action_horizon, 18]`
 - `server_timing`：服务端耗时信息
-
-## 8. 常见注意事项
-
-- AlohaMini2Pro 必须使用 `alohamini2pro_0604` 配置，不要使用旧的 `pick_up_merged` 示例配置。
-- 不要把 `robot_dof` 设置成 16。
-- 不要发送 `head_top` 相机；你的数据集主视角是 `chest`，在 OpenPI 里映射成 `cam_high`。
-- HTTP 推理服务只负责模型推理，不直接连接真实机器人。
-- 真机执行仍需要机器人侧程序采集 AlohaMini2Pro 的三路相机和 18 维状态，再把 HTTP 返回的 18 维 action 下发给机器人。
-- 训练时的 `default_prompt` 和推理时的 `prompt` 应保持一致，除非你明确训练了多任务文本数据。
